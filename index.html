@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Self-Modeling Stable Control</title>
+<meta name="description" content="A controlled simulation study of online self-modeling for control with a stability guarantee on the learned part, in MuJoCo."/>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<div class="layout">
+
+<aside class="rail">
+  <div class="rail-inner">
+    <div class="kicker">controlled simulation study · MuJoCo · no hardware</div>
+    <h1>Self-Modeling<br>Stable Control</h1>
+    <p class="sub">Can a robot read its own wear out of its own data, and correct for it without ever letting the learned part off its leash?</p>
+
+    <div class="authors">
+      <div class="a-name">Sehaj Randhir Singh</div>
+      <div class="a-aff">independent</div>
+    </div>
+
+    <nav class="rail-links">
+      <a href="whitepaper.md">whitepaper</a>
+      <a href="https://github.com/" data-repo>code</a>
+      <a href="#bib">bibtex</a>
+    </nav>
+
+    <div class="abstract">
+      <div class="abstract-h">Abstract</div>
+      <p>A controller is only as good as the model it was tuned against, and that model goes stale the moment the machine starts to age. We ask whether a robot can estimate its own drift online, from nothing but the proprioceptive and electrical signals it already measures about itself, and feed that estimate into a controller whose learned part is provably bounded, so tracking holds as the hardware drifts. The learned term is a radial-basis residual updated by a Lyapunov-derived law with leakage and projection, sitting on a computed-torque baseline that holds stability the entire time. Across a pendulum, a reacher, and a contact-rich push arm in MuJoCo, the adaptive controller holds tracking roughly flat while the fixed baseline drifts, and the same robot, trained offline on early low-drift data, forecasts an unseen wear level it never saw. We report, with equal weight, the two places it breaks, low excitation and contact.</p>
+    </div>
+
+    <div class="rail-foot">simulation only · every number reproduces from a script</div>
+  </div>
+</aside>
+
+<main class="content">
+
+  <figure class="lead">
+    <video autoplay muted loop playsinline preload="metadata">
+      <source src="assets/side_by_side.mp4" type="video/mp4">
+    </video>
+    <figcaption>Same reacher, same sudden drift at <span class="m">t = 5s</span>, same seed. Left is the fixed computed-torque baseline, right is the same baseline plus the bounded learned residual. A second after the disturbance the baseline sits at 20.3 mrad of joint error and the adaptive controller holds 1.6 mrad. The labels are burned into the frame at render time, so there's nothing here to take on faith. Simulation only.</figcaption>
+  </figure>
+
+  <section>
+    <h2>The stale-model problem, and why the obvious fix is the wrong one</h2>
+    <p>Stand in front of any servo-driven machine and you're looking at a controller running a model of itself that was frozen at commissioning, and that model started drifting away from reality the instant the thing was powered on, because copper resistance climbs as the windings heat, friction creeps as the joints wear, the payload changes between tasks, and the torque you actually get for a commanded current sags as the motor warms. None of that is exotic, it's just what hardware does, and the controller that tracked beautifully on day one is slowly steering a plant it no longer matches, bleeding performance the whole way until someone notices. The standard answer is to stop the machine and recalibrate, which needs a person and a stop and throws away the one thing the robot has in abundance, which is that it's already measuring almost everything it would need to notice the drift on its own.</p>
+    <p>So the honest question isn't whether you can learn the drift, because of course you can fit a network to it, it's whether you can learn it online without trading a stale model for an unpredictable one, because the moment a learned term is allowed to command whatever it wants you've swapped a controller that's slowly wrong for one that can be suddenly and confidently wrong, and on real hardware the second failure is the worse of the two. That tension is the whole thing this study sits inside, and it's why the interesting object isn't the network, it's the leash.</p>
+  </section>
+
+  <section>
+    <h2>The method, from the bottom up because the order is the argument</h2>
+    <p>The controller is three layers on a self-observation feed, and you have to read it bottom-up because each layer only earns its place once the one under it is solid. The floor is a computed-torque baseline, which is inverse-dynamics control, and it holds stability the entire run and is never switched out, because it asks a frozen nominal model for the mass matrix and the gravity-and-Coriolis bias and then commands exactly the torque that produces the acceleration it wants, so when the model matches the plant the dynamics cancel and what's left is a clean linear error system. That cancellation is why the no-drift tracking sits in the low thousandths of a radian, and that number is load-bearing for the entire page, because if the baseline were weak then every comparison that follows would just be measuring how badly it was tuned and a reviewer would see straight through it, so it's verified first and everything else is measured against a baseline that's genuinely good.</p>
+
+    <figure>
+      <img src="assets/fig1_system_diagram.svg" alt="The control loop: self-observation feeds a bounded RBF residual, a computed-torque baseline holds stability, a safety layer clips the residual and projects the weights, and a Lyapunov law updates the weights from the composite error."/>
+      <figcaption>The loop. Self-observation feeds the bounded residual, the computed-torque baseline holds stability, the safety layer clips the residual and projects the weights onto a norm ball, and the Lyapunov law moves the weights from the composite error <span class="m">s = ė + λe</span>.</figcaption>
+    </figure>
+
+    <p>On top of that floor sits the learned residual, and the one design decision everything depends on is that it's kept linear in its weights, written <span class="m">u = Wᵀφ(x)</span> with <span class="m">φ</span> a fixed bank of radial basis functions over the robot's own joint position and velocity, drawn once from a seeded random set of centers and then never moved, so the only thing that adapts is the weight vector. This isn't a limitation I'm apologizing for, it's the hinge the proof turns on, because once the features are fixed the parameter error enters the storage function quadratically and the update law falls straight out of demanding the storage function decrease, which is exactly the structure a deeper network would destroy. This is old, solid ground, the radial-basis direct adaptive control of Sanner and Slotine <a class="cite" href="#ref-sanner">[1]</a> and the guaranteed-tracking neural robot controllers of Lewis and colleagues <a class="cite" href="#ref-lewis">[2]</a>, and the contribution here isn't the residual, it's wiring it to self-observation and stress-testing where the guarantee stops meaning anything.</p>
+
+    <p>The weights ride a Lyapunov-derived law, <span class="m">Ẇ = Γφsᵀ − σΓW</span>, where the first term drives the residual to cancel the model error the drift opened up and the second is leakage, the e-modification idea from Narendra and Annaswamy <a class="cite" href="#ref-narendra">[3]</a>, which bleeds the weights back toward zero whenever the motion stops exciting the regressor, so the estimate can't wander off during the quiet stretches when there's nothing to learn. With the Lyapunov function <span class="m">V = ½sᵀs + ½ tr(W̃ᵀΓ⁻¹W̃)</span> the derivative works out to <span class="m">V̇ ≤ −Ksᵀs + O(σ) + O(ε)</span>, which is uniform ultimate boundedness of both the tracking error and the parameter error, meaning both stay inside a ball whose size the gains set rather than growing without bound. That clean statement holds in the linear-in-weights regime and a deeper residual breaks it, which is the real ceiling on the whole approach and is named as such rather than buried.</p>
+
+    <p>The top layer is safety, and its only job is to keep the learned part inside the region where the bound is actually valid, by saturating the residual torque so it can never command past a set magnitude and projecting the weight matrix back onto a fixed-radius ball after every update, so even when the regressor goes quiet and leakage alone is slow the estimate can't leave the certified set. The reason it's a separate switchable layer instead of baked in is that you can turn it off and measure exactly what it bought, which is how it earns its keep on a number instead of on a promise, and that number turns out to be the gap between a controller that stays smooth and one that comes apart.</p>
+
+    <p>The self-observation feed is the only thing the self-model is ever allowed to see, and it's built deliberately from what a real machine measures about its own body: joint position and velocity and a finite-difference acceleration, the commanded torque, a motor-current proxy that's motor torque over the torque constant with the gear correctly in the denominator, a back-EMF proxy from speed, an electrical-power estimate, a lumped winding temperature from a first-order <span class="m">i²R</span> thermal model, and an effort residual that's the applied torque minus what the frozen nominal model says that torque should have been. That last channel is the tell, because when the plant drifts the nominal model stops predicting torque correctly and the gap opens up right there, and the drift is injected only into the true plant and never handed to the controller, so anything the self-model recovers it recovers from the robot's own data and nothing else.</p>
+  </section>
+
+  <section>
+    <h2>Three small worlds, and a wear model that heats itself</h2>
+    <p>The testbeds are reimplemented directly in MuJoCo with no reinforcement-learning stack underneath, so the whole study reproduces from MuJoCo and NumPy alone, and they go simplest first because that's the honest order to earn trust in. The pendulum is one equation and it's the cleanest place to show bounded online adaptation. The two-link reacher in a vertical plane is the robotics-native case, where gravity loads both joints in a way that swings with configuration, so a drifted payload corrupts the cancellation differently at every pose. The planar arm pushing a free cube is the most legible, because the cost of getting the arm's own dynamics wrong shows up as the cube ending up somewhere it shouldn't. Drift is injected by scaling the true plant's payload mass, joint friction and damping, and an actuator torque constant that sags, and in the gradual case part of that is tied to the winding temperature, so sustained current is what actually heats the joints and drives the wear, which is a closer caricature of how hardware ages over a long run than a scripted ramp on a clock.</p>
+    <figure>
+      <img src="assets/fig2_testbed_drift.png" alt="The three MuJoCo testbeds rendered, and the thermal-coupled drift variables over a run."/>
+      <figcaption>The three testbeds as the controller sees them, and the drift they undergo over a 45 second run. Friction climbs to roughly 2.6× nominal, the actuator torque constant sags toward 0.8×, the payload creeps to 1.3×, and the normalized winding temperature the robot logs is what the gradual case ties the wear to.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>What the runs show, and the slope that actually matters</h2>
+    <p>The no-drift baseline tracks tightly on all three systems, 1.30e-3 rad RMS on the pendulum, 1.78e-3 on the reacher, 3.60e-3 on the push arm, so the gate everything hangs on is genuinely met, and adding the bounded residual doesn't hurt the clean case, it helps it slightly by mopping up the small nominal friction mismatch the model never had exactly right. The interesting behavior shows up the moment the plant pulls away from the model. Under a sudden mid-run shift, a doubled payload with stiffer friction and a torque sag at a fixed time, the baseline takes a permanent hit because its model is now wrong and stays wrong, while the adaptive controller recovers inside the run, and the margin is large on the easy system and smaller on the hard one, which is the honest ordering you'd want.</p>
+
+    <table>
+      <caption>Headline tracking error, RMS in radians, read straight from <span class="m">results/tables/&lt;testbed&gt;_metrics.csv</span>. Lower is better, the adaptive column has the safety layer on. The smaller margin on the contact-rich push arm is the trustworthy one, because that's the harder system, and a small honest margin over a strong baseline beats a giant margin over a weak one every time.</caption>
+      <thead><tr><th>testbed</th><th>no-drift base</th><th>sudden base</th><th>sudden adaptive</th><th>gradual base</th><th>gradual adaptive</th></tr></thead>
+      <tbody>
+        <tr><td>pendulum</td><td>1.30e-3</td><td>1.33e-2</td><td class="good">4.48e-4</td><td>5.53e-3</td><td class="good">2.16e-4</td></tr>
+        <tr><td>reacher</td><td>1.78e-3</td><td>1.29e-2</td><td class="good">1.23e-3</td><td>6.37e-3</td><td class="good">9.77e-4</td></tr>
+        <tr><td>cubepush</td><td>3.60e-3</td><td>6.52e-3</td><td class="good">9.27e-4</td><td>5.11e-3</td><td class="good">8.62e-4</td></tr>
+      </tbody>
+    </table>
+
+    <figure>
+      <img src="assets/fig3_tracking_over_time.png" alt="Tracking error over the long gradual-drift run on all three testbeds, baseline against adaptive, log scale."/>
+      <figcaption>Self-modeling under wear, over the 45 second thermal-coupled run. The thing to read isn't the gap at any single instant, it's that the baseline curve has a slope and the adaptive one doesn't, because the slope is what eventually ends a deployment. The baseline falls further behind as its frozen model ages, the adaptive controller holds roughly flat by absorbing the drift online with no reset and no human in the loop.</figcaption>
+    </figure>
+
+    <figure>
+      <img src="assets/fig4_sudden_response.png" alt="Tracking error around the sudden mid-run shift, baseline vs adaptive vs adaptive+safety, on all three testbeds."/>
+      <figcaption>The sudden shift at <span class="m">t = 5s</span>. Before the disturbance every controller tracks the same, which is the point, because they're being compared from an honest common baseline rather than one quietly handicapped at the start. After it, the baseline locks into a permanently larger error and the adaptive variants pull back down. Adaptive and adaptive+safety sit almost on top of each other here, because on a richly excited reference the safety layer never has to intervene, which is exactly how a safety layer should behave when it isn't needed.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>The sharper question: can it see the wear coming?</h2>
+    <p>Correcting drift as it happens is useful, but the version of the question that actually maps onto a robot building a model of its own body is whether it could have seen the drift coming from its own logged data, so the offline protocol takes a fixed log of the self-observation recorded while the plant drifted under the plain baseline, with no learning running so the effort residual is a clean readout of the model error, fits the self-model on the early low-drift part of the run, and tests it on the later high-drift part it never saw. This is the one result on the page that's literally a robot forecasting a wear level it was never trained on, purely from signals it generated about itself, and on the pendulum it works cleanly, which is the part worth being excited about, and on the reacher it half-works, and on the push arm it fails, which is the part worth being honest about.</p>
+
+    <table>
+      <caption>Offline drift prediction, from <span class="m">results/offline/&lt;testbed&gt;_offline_metrics.csv</span>. The honest comparison is the held-out error against simply assuming nothing changed, the predict-zero column, because a self-model only earns the claim if it beats the do-nothing predictor. Read the R² alongside it, not instead of it: the pendulum is the clean win, the reacher still beats do-nothing by 3.5× in error but its R² goes negative because fixed features under-predict once friction has tripled past the training range, and the push arm is the genuine failure, marked as such.</caption>
+      <thead><tr><th>testbed</th><th>held-out RMSE (Nm)</th><th>predict-zero (Nm)</th><th>vs do-nothing</th><th>R² vs test mean</th></tr></thead>
+      <tbody>
+        <tr><td>pendulum</td><td>3.29e-2</td><td>2.71e-1</td><td class="good">8.2× better</td><td class="good">0.985</td></tr>
+        <tr><td>reacher</td><td>1.42e-1</td><td>5.02e-1</td><td class="good">3.5× better</td><td class="warnc">−0.497</td></tr>
+        <tr><td>cubepush</td><td>6.57e-2</td><td>4.59e-2</td><td class="bad">1.43× worse</td><td class="bad">−1.045</td></tr>
+      </tbody>
+    </table>
+
+    <figure>
+      <img src="assets/fig6_offline_prediction.png" alt="Offline drift prediction on the pendulum, predicted versus actual effort residual with the train/held-out split marked, and held-out error versus extrapolation distance across all three testbeds."/>
+      <figcaption>Left, on the pendulum, the self-model fit on the first 27 seconds tracks the actual effort residual through the unseen high-drift tail almost exactly, which is what an R² of 0.985 on data it never trained on looks like. Right, the honest caveat: held-out error grows with how far past the training window you ask it to predict, gently on the pendulum and steeply on the reacher, because a fixed feature map only extrapolates so far before the drift outruns what the basis can represent.</figcaption>
+    </figure>
+
+    <div class="callout">
+      <h3>Where it doesn't help, with equal weight</h3>
+      <p>Two failures matter as much as the wins, and a study that hides them isn't worth trusting on the parts that work. Under a low-excitation step-and-hold reference the residual has too little time on each setpoint to pay back its own transient, so adaptation barely improves tracking and on the pendulum it's slightly worse, 9.4e-2 against 9.6e-2 radians, which is exactly the regime where this kind of online correction isn't worth its cost and shouldn't be sold there. And the offline self-model fails outright on the push arm, doing worse than assuming nothing changed, because that arm's joints are gravity free and its effort residual is dominated by contact impulses from the cube rather than a smooth function of the arm's own state, so there's almost no learnable drift signal to recover. The method earns its keep on the gravity-loaded systems where drift shows up as a smooth, predictable model error, and the contact case is the clearest signpost of where the next real work is, because the thing that breaks it is exactly what manipulation is made of.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>The leash earns its place on a measured number</h2>
+    <p>The cleanest result in the whole study is the one that justifies the architecture, and it only shows up when the excitation is poor, which is the regime that separates a method that's actually safe from one that merely hasn't failed yet. Under a rich reference the naive residual, the same network updated by plain gradient descent with no leakage and no projection, tracks just as well as the bounded variant and sometimes a hair better, because leakage trades a little accuracy for robustness you don't need when the motion keeps exciting the regressor. Starve the excitation and that trade reverses hard, because with nothing pulling the weights back they walk off, climbing to a norm of roughly 1.3e3 on the pendulum, 3.9e4 on the reacher, and 1.3e7 on the contact-rich push arm, where the system diverges outright with over twenty thousand ticks outside the sane operating range, while the bounded variant pins its weight norm at the projection radius, keeps the torque smooth, and stays stable at comparable tracking.</p>
+    <figure>
+      <img src="assets/fig7_weight_norm.png" alt="Residual weight norm on the step/low-excitation run for all three testbeds."/>
+      <figcaption>Weight norm under the low-excitation stress test, log scale. The bounded variant stays pinned at its projection radius on all three systems while the naive update climbs without limit, three orders of magnitude on the pendulum and seven on the push arm. This is the case for leakage and projection made on a measured quantity rather than asserted, and it's why the safety layer isn't optional once the excitation isn't guaranteed, which on a real robot doing real tasks it never is.</figcaption>
+    </figure>
+    <figure>
+      <img src="assets/fig5_ablation.png" alt="RMS tracking error by controller across the sudden-shift case and the step/low-excitation case for all three testbeds."/>
+      <figcaption>The full ablation. Top row, the richly excited sudden shift, where every learned variant beats the baseline by an order of magnitude and the naive update looks completely fine. Bottom row, the low-excitation case, where the naive update is the worst of all four by a wide margin, off the top of the scale on every system. The verdict on safety lives in the bottom row, not the top, and reading an adaptive-control result from its best case alone is exactly the trap that hides this.</figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <h2>How this connects to the larger idea, and where it honestly sits</h2>
+    <p>The longer arc this is a first step toward is what I've been calling electric adaptation, the idea that an engineered system shouldn't run a model of itself frozen at commissioning, it should keep that model current from its own operation, the way a good operator builds an intuition for one specific machine and feels when it's off. The motor is the cleanest place that idea lives, because a commissioned induction motor at 93% efficiency bleeds toward 85% within a couple of years as its rotor resistance drifts and nobody tells the controller, and the same structure repeats everywhere a physical system runs under conditions that move, in grid inverters and battery packs and HVAC and aircraft actuators. What this study does is take the smallest, sharpest, fully testable piece of that idea, online self-modeling of drift for control with a guarantee on the learned part, and actually run it, which is worth more to me than a bigger claim I couldn't back, because the whole point of electric adaptation is that the system understands its own physical substrate, and you only get to say that once you've shown the understanding is real and bounded rather than asserted.</p>
+    <p>It's worth being exact about the size of what's here, because the value is the precision and not the scope. This is three small systems with one and two degrees of freedom, easy references, drift parameterized over a handful of multiplier knobs, run in simulation with a residual that's linear in fixed hand-chosen features and a safety layer that's scalar caps rather than the full projection-based guarantee a robust adaptive control text would derive. Inside that box the result is clean and it reproduces from a script, but the box is small, and the honest reading is that this demonstrates a mechanism rather than a capability. The three things that most decide whether the mechanism survives contact with a real robot are the three things this study also shows breaking it, the residual has to leave the linear-in-weights regime to carry richer dynamics without losing the bound, the method has to handle contact where the residual stops being a smooth function of state and the whole offline story falls apart, and the excitation can't be assumed because the low-excitation case is where the unbounded version quietly destroys itself. Those aren't weaknesses tacked on at the end, they're the map of where the next work goes, and any one of them is a real problem rather than a tuning exercise, which is what makes this a first step toward self-modeling robot control rather than a finished version of it.</p>
+  </section>
+
+  <section>
+    <h2>Limitations</h2>
+    <p>Simulation only, on small low-degree-of-freedom systems, with the clean stability bound holding only in the linear-in-weights regime with a fixed hand-chosen radial-basis feature map and scalar safety caps, so this is a controlled study of a mechanism and not a hardware result. The drift model is a deliberate caricature of wear with hand-set coefficients, the contact case shows the self-model can fail when the residual isn't a smooth function of state, the extrapolation degrades once the drift moves far past what the fit ever saw, and none of this has touched a real motor, where the electrical and thermal signals would be measured and noisy in ways a lumped model doesn't fully capture.</p>
+  </section>
+
+  <section>
+    <h2>What comes next</h2>
+    <p>The next steps build outward from the same spine. A forward-predicting online world model rather than a static residual would let the robot anticipate its drift instead of only correcting after the error shows up, which is the difference between a controller that follows the wear and one that stays ahead of it. A physics-constrained or port-Hamiltonian residual would add capacity while keeping a boundedness guarantee, which is the way past the linear-in-weights ceiling without giving up the proof. Richer sensing than joint state and a current proxy would carry more of the drift signal, contact-rich manipulation where the contact is modeled rather than rejected would go straight at the case that fails here, and a transfer to real hardware, where the electrical and thermal channels are measured rather than simulated, is the test that would actually tell us whether any of this survives a real motor with a real heating curve, which is the only test that finally counts.</p>
+  </section>
+
+  <section id="bib">
+    <h2>References</h2>
+    <ol class="refs">
+      <li id="ref-sanner">R. M. Sanner and J.-J. E. Slotine. Gaussian networks for direct adaptive control. <i>IEEE Transactions on Neural Networks</i>, 3(6):837–863, 1992.</li>
+      <li id="ref-lewis">F. L. Lewis, K. Liu, and A. Yesildirek. Neural net robot controller with guaranteed tracking performance. <i>IEEE Transactions on Neural Networks</i>, 6(3):703–715, 1995.</li>
+      <li id="ref-narendra">K. S. Narendra and A. M. Annaswamy. A new adaptive law for robust adaptation without persistent excitation. <i>IEEE Transactions on Automatic Control</i>, 32(2):134–145, 1987.</li>
+      <li id="ref-slotine">J.-J. E. Slotine and W. Li. <i>Applied Nonlinear Control</i>. Prentice Hall, 1991.</li>
+      <li id="ref-sannerrobot">R. M. Sanner and J.-J. E. Slotine. Stable adaptive control of robot manipulators using neural networks. <i>Neural Computation</i>, 7(4):753–790, 1995.</li>
+    </ol>
+
+    <details class="bibtex">
+      <summary>show bibtex</summary>
+      <pre>@article{sanner1992gaussian,
+  author  = {Sanner, Robert M. and Slotine, Jean-Jacques E.},
+  title   = {Gaussian networks for direct adaptive control},
+  journal = {IEEE Transactions on Neural Networks},
+  volume  = {3}, number = {6}, pages = {837--863}, year = {1992}
+}
+
+@article{lewis1995neural,
+  author  = {Lewis, Frank L. and Liu, Kai and Yesildirek, Aydin},
+  title   = {Neural net robot controller with guaranteed tracking performance},
+  journal = {IEEE Transactions on Neural Networks},
+  volume  = {6}, number = {3}, pages = {703--715}, year = {1995}
+}
+
+@article{narendra1987new,
+  author  = {Narendra, Kumpati S. and Annaswamy, Anuradha M.},
+  title   = {A new adaptive law for robust adaptation without persistent excitation},
+  journal = {IEEE Transactions on Automatic Control},
+  volume  = {32}, number = {2}, pages = {134--145}, year = {1987}
+}
+
+@book{slotine1991applied,
+  author    = {Slotine, Jean-Jacques E. and Li, Weiping},
+  title     = {Applied Nonlinear Control},
+  publisher = {Prentice Hall}, year = {1991}
+}
+
+@article{sanner1995stable,
+  author  = {Sanner, Robert M. and Slotine, Jean-Jacques E.},
+  title   = {Stable adaptive control of robot manipulators using neural networks},
+  journal = {Neural Computation},
+  volume  = {7}, number = {4}, pages = {753--790}, year = {1995}
+}</pre>
+    </details>
+  </section>
+
+  <section id="reproduce">
+    <h2>Reproduce</h2>
+    <p>Every number and figure here is produced by a script that reads a saved CSV. Nothing is hand-typed, seeds are fixed in the configs and printed by each runner.</p>
+    <pre>pip install -r requirements.txt
+python experiments/run_suite.py --config configs/pendulum.yaml
+python experiments/run_suite.py --config configs/reacher.yaml
+python experiments/run_suite.py --config configs/cubepush.yaml
+python experiments/run_offline_eval.py --config configs/pendulum.yaml
+python analysis/plots.py
+python experiments/render_clips.py</pre>
+  </section>
+
+  <footer>
+    Sehaj Randhir Singh · Self-Modeling Stable Control · simulation only, MuJoCo · built stage by stage with real output verified at every gate.
+  </footer>
+
+</main>
+</div>
+</body>
+</html>
