@@ -1,6 +1,6 @@
 # Self-Modeling Stable Control
 
-Sehaj Randhir Singh. Simulation only, MuJoCo, no hardware.
+
 
 A controller is only ever as good as the model it was tuned against, and that
 model goes stale the moment the machine starts to age, because friction climbs as
